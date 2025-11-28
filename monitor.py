@@ -1,81 +1,118 @@
 import requests
-import re
+from bs4 import BeautifulSoup
+import PyPDF2
 import os
-from PyPDF2 import PdfReader
+import urllib.parse
+import time
+
+CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
+
+def send_whatsapp(msg):
+    phone = os.environ["WHATSAPP_PHONE"]
+    key = os.environ["WHATSAPP_KEY"]
+    encoded = urllib.parse.quote(msg)
+    url = f"{CALLMEBOT_URL}?phone={phone}&text={encoded}&apikey={key}"
+
+    print("Enviando WhatsApp...")
+    try:
+        r = requests.get(url, timeout=20)
+        print("Status WhatsApp:", r.text)
+    except Exception as e:
+        print("Erro WhatsApp:", e)
 
 
-BASE_URL = "https://www.tce.ce.gov.br/diario-oficial/consulta-por-data-de-edicao"
-DOWNLOAD_PREFIX = "https://www.tce.ce.gov.br"
-
-PHONE = os.getenv("WHATSAPP_PHONE")
-API_KEY = os.getenv("WHATSAPP_KEY")
-SEARCH_NAME = os.getenv("SEARCH_NAME")
-
-
-def baixar_pdf():
+def download_latest_pdf():
     print("Buscando página principal...")
 
-    html = requests.get(BASE_URL).text
+    url = "https://www.tce.ce.gov.br/diario-oficial/consulta-por-data-de-edicao"
 
-    # pega FIRST ocorrência de link para PDF
-    match = re.search(r'href="(/doeconsulta/edicoes/edicao_[0-9]+\.pdf)"', html)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+    }
 
-    if not match:
-        raise Exception("Não encontrei link para PDF")
+    # Tentativas para contornar instabilidade
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+            if resp.status_code == 200:
+                break
+        except Exception as e:
+            print(f"Tentativa {attempt+1} falhou:", e)
+            time.sleep(3)
+    else:
+        # Não conseguiu acessar nem na 3ª tentativa
+        raise Exception("Falha ao acessar página principal após 3 tentativas.")
 
-    pdf_url = DOWNLOAD_PREFIX + match.group(1)
-    nome_pdf = pdf_url.split("/")[-1]
+    soup = BeautifulSoup(resp.text, "html.parser")
 
-    print("Baixando PDF:", pdf_url)
+    # Pegar a primeira lupinha válida
+    button = soup.find("input", {"title": "Visualizar Edição."})
+    if not button:
+        raise Exception("Não encontrei botão de visualizar PDF.")
 
-    r = requests.get(pdf_url)
-    with open(nome_pdf, "wb") as f:
-        f.write(r.content)
+    name_attr = button.get("name")
+    if not name_attr:
+        raise Exception("Botão não tem atributo 'name' válido.")
 
-    return nome_pdf
+    form_action = "https://www.tce.ce.gov.br/diario-oficial/consulta-por-data-de-edicao"
+    pdf_download_url = form_action  # POST nativo
+
+    print("Baixando PDF...")
+
+    data = {name_attr: name_attr}
+    pdf_resp = requests.post(pdf_download_url, data=data, headers=headers, timeout=20)
+
+    if pdf_resp.status_code != 200 or b"%PDF" not in pdf_resp.content[:10]:
+        raise Exception("Servidor retornou algo que NÃO é PDF.")
+
+    save_name = "edicao.pdf"
+    with open(save_name, "wb") as f:
+        f.write(pdf_resp.content)
+
+    print("PDF salvo como:", save_name)
+    return save_name
 
 
-def procurar_nome(nome_pdf):
-    print("Abrindo PDF:", nome_pdf)
-    reader = PdfReader(nome_pdf)
-    texto = ""
+def search_name_in_pdf(pdf_path, name):
+    print("Extraindo texto...")
 
-    for page in reader.pages:
-        texto += page.extract_text() or ""
+    with open(pdf_path, "rb") as f:
+        reader = PyPDF2.PdfReader(f)
+        text = ""
+        for page in reader.pages:
+            try:
+                text += page.extract_text() or ""
+            except:
+                pass
 
-    return SEARCH_NAME.lower() in texto.lower()
+    text_lower = text.lower()
+    name_lower = name.lower()
 
-
-def enviar_whatsapp(msg):
-    print("Enviando WhatsApp...")
-
-    url = (
-        f"https://api.callmebot.com/whatsapp.php?"
-        f"phone={PHONE}&text={requests.utils.quote(msg)}&apikey={API_KEY}"
-    )
-
-    r = requests.get(url)
-    print("Status WhatsApp:", r.text)
+    return name_lower in text_lower
 
 
 def main():
-    try:
-        pdf = baixar_pdf()
-        achou = procurar_nome(pdf)
+    pdf = None  # evita erro se falhar antes do download
 
-        if achou:
-            enviar_whatsapp(f"Boa notícia! Seu nome apareceu no PDF: {pdf}")
+    try:
+        search_name = os.environ["SEARCH_NAME"]
+
+        pdf = download_latest_pdf()
+        found = search_name_in_pdf(pdf, search_name)
+
+        if found:
+            send_whatsapp(f"Boa notícia! Seu nome '{search_name}' apareceu no PDF: {pdf}")
         else:
-            enviar_whatsapp("Nada ainda… seu nome não foi encontrado hoje.")
+            send_whatsapp(f"Nada ainda. Seu nome NÃO apareceu no PDF de hoje.")
 
     except Exception as e:
-        enviar_whatsapp(f"Erro na verificação: {str(e)}")
+        send_whatsapp(f"Erro na verificação: {e}")
 
     finally:
-        # apagar o PDF
-        if os.path.exists(pdf):
+        # Só apaga se o PDF realmente existir
+        if pdf and os.path.exists(pdf):
             os.remove(pdf)
-            print("PDF apagado:", pdf)
+            print("PDF removido.")
 
 
 if __name__ == "__main__":
