@@ -1,0 +1,29 @@
+name: Verificar TCE
+
+on:
+  schedule:
+    - cron: "0 20 * * 1-5"   # roda às 17h no Brasil (20h UTC)
+  workflow_dispatch:        # permite rodar manualmente também
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v3
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: pip install PyPDF2 requests
+
+      - name: Executar monitor
+        env:
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+          WHATSAPP_KEY: ${{ secrets.WHATSAPP_KEY }}
+          SEARCH_NAME: ${{ secrets.SEARCH_NAME }}
+        run: python monitor.py
