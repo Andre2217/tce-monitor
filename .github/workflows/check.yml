@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Instalar dependências
-        run: pip install PyPDF2 requests b24
+        run: pip install PyPDF2 requests bs4
 
       - name: Executar monitor
         env:
